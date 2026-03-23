@@ -6,3 +6,6 @@ members = [
     "crates/joinmarket-dn",
 ]
 resolver = "2"
+
+[workspace.dependencies]
+libsqlite3-sys = { version = "0.36", features = ["bundled"] }
