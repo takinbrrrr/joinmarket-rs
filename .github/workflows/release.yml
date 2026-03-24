@@ -62,15 +62,10 @@ jobs:
         if: matrix.use_cross
         run: cross build --release --target ${{ matrix.target }} ${{ matrix.variant == 'arti' && '--no-default-features --features arti' || '' }}
 
-      - name: Install SQLite (Windows)
-        if: runner.os == 'Windows'
-        run: vcpkg install sqlite3:x64-windows-static
-
       - name: Build (native)
         if: "!matrix.use_cross"
         run: cargo build --release --target ${{ matrix.target }} ${{ matrix.variant == 'arti' && '--no-default-features --features arti' || '' }}
         env:
-          VCPKG_ROOT: ${{ runner.os == 'Windows' && 'C:\vcpkg' || '' }}
           RUSTFLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '-C target-feature=+crt-static' || '' }}
 
       - name: Determine binary name
