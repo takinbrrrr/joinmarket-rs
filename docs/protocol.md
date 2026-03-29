@@ -1,6 +1,32 @@
 # joinmarket-rs — Wire Protocol Reference
 
-## Handshake (JSON, sent immediately on connect, both directions)
+## Transport
+
+All messages are JSON envelopes terminated by `\r\n`:
+
+```json
+{"type": <integer>, "line": "<payload>"}
+```
+
+The `type` field is an integer discriminator. The `line` field carries the payload string.
+
+## Envelope types
+
+| Type | Name | Direction | Purpose |
+|------|------|-----------|---------|
+| 685 | PRIVMSG | peer → DN → peer | Private message relay |
+| 687 | PUBMSG | peer → DN → all | Public broadcast |
+| 789 | PEERLIST | DN → peer | List of known makers |
+| 791 | GETPEERLIST | peer → DN | Request maker list |
+| 793 | HANDSHAKE | peer → DN | Initial handshake |
+| 795 | DN_HANDSHAKE | DN → peer | Handshake response |
+| 797 | PING | DN → peer | Liveness probe |
+| 799 | PONG | peer → DN | Liveness response |
+| 801 | DISCONNECT | either | Graceful close |
+
+## Handshake
+
+### Peer → DN (type 793)
 
 ```json
 {
@@ -14,55 +40,99 @@
 }
 ```
 
-Directory node adds `"directory": true` and `"motd": "<message>"` to its outbound handshake.
+- `location-string`: `"onion:port"` for makers, `""` or `"NOT-SERVING-ONION"` for takers
+- `features` may contain `"fidelity_bond"` (base64-encoded 252-byte proof)
 
-## Message format
+### DN → Peer (type 795)
+
+```json
+{
+  "app-name": "joinmarket",
+  "directory": true,
+  "location-string": "abcdef1234567890.onion:5222",
+  "proto-ver-min": 5,
+  "proto-ver-max": 5,
+  "features": {},
+  "accepted": true,
+  "nick": "J5dirNickOOOOOOO",
+  "network": "mainnet",
+  "motd": "Welcome to this directory node"
+}
+```
+
+## GETPEERLIST / PEERLIST exchange (envelope types 791 / 789)
+
+Peer sends an empty type 791 envelope. DN responds with type 789 containing comma-separated `nick;location` pairs:
 
 ```
-!command field1 field2 ... fieldN\n
+→ {"type": 791, "line": ""}
+← {"type": 789, "line": "J5dir;dir.onion:5222,J5maker;maker.onion:5222"}
 ```
 
-Messages are newline-terminated (`\n`), whitespace-delimited. Maximum line length: 40,000 bytes (matches Python JoinMarket's `MAX_LENGTH`).
+Disconnected peers may be suffixed with `;D`. Only makers appear in the peer list — takers are never exposed.
 
-## `!getpeers` / `!peers` exchange
+## PING / PONG (envelope types 797 / 799)
+
+DN sends type 797 to probe liveness. Peer responds with type 799. Peers that do not respond within the timeout are evicted.
 
 ```
-→ !getpeers\n
-← !peers {"peers":[{"nick":"J5abc...","onion":"xxx.onion:5222","bond":null},...], "total_makers":42, "returned":42}\n
+← {"type": 797, "line": ""}
+→ {"type": 799, "line": ""}
 ```
+
+## Application commands (`!` prefixed, inside PUBMSG / PRIVMSG payloads)
+
+### Message format
+
+PUBMSG payload: `<from_nick>!PUBLIC!<command> <fields...>`
+PRIVMSG payload: `<from_nick>!<to_nick>!!<command> <fields...>`
+
+Commands are `!`-prefixed, whitespace-delimited, newline-terminated. Maximum line length: 40,000 bytes (matches Python JoinMarket's `MAX_LENGTH`).
+
+### Public broadcast commands (via PUBMSG type 687)
+
+| Command | Purpose |
+|---------|---------|
+| `!absoffer` | Absolute fee offer announcement |
+| `!reloffer` | Relative fee offer announcement |
+| `!swabsoffer` | Segwit absolute fee offer |
+| `!swreloffer` | Segwit relative fee offer |
+| `!sw0absoffer` | Native segwit absolute fee offer |
+| `!sw0reloffer` | Native segwit relative fee offer |
+| `!orderbook` | Orderbook request/update |
+| `!cancel` | Cancel an order by ID |
+| `!hp2` | PoDLE commitment broadcast |
+| `!tbond` | Fidelity bond proof announcement |
+
+The DN broadcasts all recognized public commands to every connected peer (except the sender). Offer commands additionally update the maker's last announcement record.
+
+### Private commands (via PRIVMSG type 685)
+
+| Command | Purpose |
+|---------|---------|
+| `!fill` | Taker initiates coinjoin with a maker |
+| `!pubkey` | Maker sends ephemeral encryption public key |
+| `!auth` | Taker sends authentication / revelation |
+| `!ioauth` | Maker sends input/output authorization |
+| `!tx` | Encrypted transaction data |
+| `!sig` | Encrypted transaction signatures |
+| `!push` | Push completed transaction |
+| `!error` | Error notification |
+| `!hp2` | Commitment transfer (private) |
+
+The DN relays PRIVMSG envelopes opaquely to the target peer without parsing the inner command. It also sends a PEERLIST (type 789) containing the sender's onion address to the target, enabling direct peer-to-peer connection.
 
 ## Private message routing
 
 ```
-→ !fill J5targetNick 1000000 ...\n
-← !peerinfo J5targetNick abcdef.onion:5222\n
+Taker sends PRIVMSG to DN:
+  {"type": 685, "line": "J5taker!J5maker!!fill 1000000 ..."}
+
+DN forwards PRIVMSG to maker:
+  {"type": 685, "line": "J5taker!J5maker!!fill 1000000 ..."}
+
+DN also sends PEERLIST with taker's location to maker:
+  {"type": 789, "line": "J5taker;taker.onion:5222,J5dir;dir.onion:5222"}
+
+Maker can then connect directly to taker.onion:5222 for subsequent negotiation.
 ```
-
-Taker then opens a direct circuit to `abcdef.onion:5222`. The directory node does NOT relay private message content.
-
-## Heartbeat
-
-```
-← !ping\n
-→ !pong\n
-```
-
-Directory sends `!ping` to all peers every 60 seconds. Peers that do not respond with `!pong` within 10 seconds are evicted.
-
-## Supported commands
-
-| Command      | Direction         | Purpose                              |
-|--------------|-------------------|--------------------------------------|
-| `!ann`       | peer → directory  | Public maker announcement (broadcast)|
-| `!orderbook` | peer → directory  | Public orderbook update (broadcast)  |
-| `!fill`      | taker → directory | Private routing request              |
-| `!absorder`  | peer → directory  | Private coinjoin negotiation         |
-| `!relorder`  | peer → directory  | Private coinjoin negotiation         |
-| `!ioauth`    | peer → directory  | Private coinjoin auth                |
-| `!txsigs`    | peer → directory  | Private coinjoin tx sigs             |
-| `!pushtx`    | peer → directory  | Private transaction push             |
-| `!disconnect`| peer → directory  | Graceful disconnect                  |
-| `!getpeers`  | peer → directory  | Request maker list                   |
-| `!peers`     | directory → peer  | Maker list response                  |
-| `!ping`      | directory → peer  | Liveness check                       |
-| `!pong`      | peer → directory  | Liveness response                    |

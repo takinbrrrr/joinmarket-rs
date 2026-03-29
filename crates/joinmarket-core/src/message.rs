@@ -77,19 +77,27 @@ pub fn make_pubmsg_line(from_nick: &str, body: &str) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageCommand {
-    Ann,
+    // Public broadcast — offer types
+    AbsOffer,
+    RelOffer,
+    SwAbsOffer,
+    SwRelOffer,
+    Sw0AbsOffer,
+    Sw0RelOffer,
+    // Public broadcast — other
     Orderbook,
+    Cancel,
+    Hp2,
+    TBond,
+    // Private commands
     Fill,
-    AbsOrder,
-    RelOrder,
     IoAuth,
-    TxSigs,
-    PushTx,
-    Disconnect,
-    Getpeers,
-    Peers,
-    Ping,
-    Pong,
+    Auth,
+    PubKey,
+    Tx,
+    Sig,
+    Push,
+    Error,
 }
 
 #[derive(Debug, Clone)]
@@ -115,39 +123,61 @@ pub enum ParseError {
 impl MessageCommand {
     fn from_str(s: &str) -> Result<Self, ParseError> {
         match s {
-            "ann"        => Ok(MessageCommand::Ann),
-            "orderbook"  => Ok(MessageCommand::Orderbook),
-            "fill"       => Ok(MessageCommand::Fill),
-            "absorder"   => Ok(MessageCommand::AbsOrder),
-            "relorder"   => Ok(MessageCommand::RelOrder),
-            "ioauth"     => Ok(MessageCommand::IoAuth),
-            "txsigs"     => Ok(MessageCommand::TxSigs),
-            "pushtx"     => Ok(MessageCommand::PushTx),
-            "disconnect" => Ok(MessageCommand::Disconnect),
-            "getpeers"   => Ok(MessageCommand::Getpeers),
-            "peers"      => Ok(MessageCommand::Peers),
-            "ping"       => Ok(MessageCommand::Ping),
-            "pong"       => Ok(MessageCommand::Pong),
-            other        => Err(ParseError::UnknownCommand(other.to_string())),
+            "absoffer"    => Ok(MessageCommand::AbsOffer),
+            "reloffer"    => Ok(MessageCommand::RelOffer),
+            "swabsoffer"  => Ok(MessageCommand::SwAbsOffer),
+            "swreloffer"  => Ok(MessageCommand::SwRelOffer),
+            "sw0absoffer" => Ok(MessageCommand::Sw0AbsOffer),
+            "sw0reloffer" => Ok(MessageCommand::Sw0RelOffer),
+            "orderbook"   => Ok(MessageCommand::Orderbook),
+            "cancel"      => Ok(MessageCommand::Cancel),
+            "hp2"         => Ok(MessageCommand::Hp2),
+            "tbond"       => Ok(MessageCommand::TBond),
+            "fill"        => Ok(MessageCommand::Fill),
+            "ioauth"      => Ok(MessageCommand::IoAuth),
+            "auth"        => Ok(MessageCommand::Auth),
+            "pubkey"      => Ok(MessageCommand::PubKey),
+            "tx"          => Ok(MessageCommand::Tx),
+            "sig"         => Ok(MessageCommand::Sig),
+            "push"        => Ok(MessageCommand::Push),
+            "error"       => Ok(MessageCommand::Error),
+            other         => Err(ParseError::UnknownCommand(other.to_string())),
         }
     }
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            MessageCommand::Ann        => "ann",
-            MessageCommand::Orderbook  => "orderbook",
-            MessageCommand::Fill       => "fill",
-            MessageCommand::AbsOrder   => "absorder",
-            MessageCommand::RelOrder   => "relorder",
-            MessageCommand::IoAuth     => "ioauth",
-            MessageCommand::TxSigs     => "txsigs",
-            MessageCommand::PushTx     => "pushtx",
-            MessageCommand::Disconnect => "disconnect",
-            MessageCommand::Getpeers   => "getpeers",
-            MessageCommand::Peers      => "peers",
-            MessageCommand::Ping       => "ping",
-            MessageCommand::Pong       => "pong",
+            MessageCommand::AbsOffer    => "absoffer",
+            MessageCommand::RelOffer    => "reloffer",
+            MessageCommand::SwAbsOffer  => "swabsoffer",
+            MessageCommand::SwRelOffer  => "swreloffer",
+            MessageCommand::Sw0AbsOffer => "sw0absoffer",
+            MessageCommand::Sw0RelOffer => "sw0reloffer",
+            MessageCommand::Orderbook   => "orderbook",
+            MessageCommand::Cancel      => "cancel",
+            MessageCommand::Hp2         => "hp2",
+            MessageCommand::TBond       => "tbond",
+            MessageCommand::Fill        => "fill",
+            MessageCommand::IoAuth      => "ioauth",
+            MessageCommand::Auth        => "auth",
+            MessageCommand::PubKey      => "pubkey",
+            MessageCommand::Tx          => "tx",
+            MessageCommand::Sig         => "sig",
+            MessageCommand::Push        => "push",
+            MessageCommand::Error       => "error",
         }
+    }
+
+    /// Returns `true` if this command is an offer type (maker announcement).
+    pub fn is_offer(&self) -> bool {
+        matches!(self,
+            MessageCommand::AbsOffer |
+            MessageCommand::RelOffer |
+            MessageCommand::SwAbsOffer |
+            MessageCommand::SwRelOffer |
+            MessageCommand::Sw0AbsOffer |
+            MessageCommand::Sw0RelOffer
+        )
     }
 }
 
@@ -223,16 +253,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_getpeers() {
-        let msg = JmMessage::parse("!getpeers\n").unwrap();
-        assert_eq!(msg.command, MessageCommand::Getpeers);
-        assert!(msg.fields.is_empty());
-    }
-
-    #[test]
-    fn test_parse_ping() {
-        let msg = JmMessage::parse("!ping").unwrap();
-        assert_eq!(msg.command, MessageCommand::Ping);
+    fn test_envelope_only_commands_rejected() {
+        // These are envelope-level types (791, 797, 799, 801), not ! commands
+        assert!(JmMessage::parse("!getpeers").is_err());
+        assert!(JmMessage::parse("!ping").is_err());
+        assert!(JmMessage::parse("!pong").is_err());
+        assert!(JmMessage::parse("!disconnect").is_err());
+        assert!(JmMessage::parse("!peers").is_err());
     }
 
     #[test]
@@ -256,12 +283,12 @@ mod tests {
     #[test]
     fn test_serialize_roundtrip() {
         let msg = JmMessage {
-            command: MessageCommand::Getpeers,
+            command: MessageCommand::Orderbook,
             fields: vec![],
             nick_sig: None,
         };
         let serialized = msg.serialize();
-        assert_eq!(serialized, "!getpeers\n");
+        assert_eq!(serialized, "!orderbook\n");
     }
 
     #[test]
@@ -277,10 +304,9 @@ mod tests {
 
     #[test]
     fn test_command_case_insensitive() {
-        // Commands should be parsed case-insensitively
-        assert_eq!(JmMessage::parse("!PING").unwrap().command, MessageCommand::Ping);
-        assert_eq!(JmMessage::parse("!Ping").unwrap().command, MessageCommand::Ping);
-        assert_eq!(JmMessage::parse("!GETPEERS").unwrap().command, MessageCommand::Getpeers);
+        assert_eq!(JmMessage::parse("!FILL").unwrap().command, MessageCommand::Fill);
+        assert_eq!(JmMessage::parse("!Fill").unwrap().command, MessageCommand::Fill);
+        assert_eq!(JmMessage::parse("!SW0ABSOFFER").unwrap().command, MessageCommand::Sw0AbsOffer);
     }
 
     #[test]
@@ -303,9 +329,9 @@ mod tests {
 
     #[test]
     fn test_parse_pubmsg_line() {
-        let (nick, body) = parse_pubmsg_line("J5maker!PUBLIC!ann hello").unwrap();
+        let (nick, body) = parse_pubmsg_line("J5maker!PUBLIC!sw0absoffer minsize=27300").unwrap();
         assert_eq!(nick, "J5maker");
-        assert_eq!(body, "!ann hello");
+        assert_eq!(body, "!sw0absoffer minsize=27300");
     }
 
     #[test]
@@ -322,5 +348,44 @@ mod tests {
     fn test_make_pubmsg_line() {
         let line = make_pubmsg_line("J5dir", "!peerinfo J5maker xxx.onion:5222");
         assert_eq!(line, "J5dir!PUBLIC!peerinfo J5maker xxx.onion:5222");
+    }
+
+    #[test]
+    fn test_parse_python_commands() {
+        // Offer types (public broadcast)
+        let offer_cmds = [
+            ("!absoffer", MessageCommand::AbsOffer),
+            ("!reloffer", MessageCommand::RelOffer),
+            ("!swabsoffer", MessageCommand::SwAbsOffer),
+            ("!swreloffer", MessageCommand::SwRelOffer),
+            ("!sw0absoffer", MessageCommand::Sw0AbsOffer),
+            ("!sw0reloffer", MessageCommand::Sw0RelOffer),
+        ];
+        for (raw, expected) in &offer_cmds {
+            let msg = JmMessage::parse(raw).unwrap();
+            assert_eq!(msg.command, *expected, "failed to parse {}", raw);
+            assert!(msg.command.is_offer(), "{} should be an offer", raw);
+        }
+
+        // Other public commands
+        assert_eq!(JmMessage::parse("!cancel 0").unwrap().command, MessageCommand::Cancel);
+        assert_eq!(JmMessage::parse("!hp2 abc").unwrap().command, MessageCommand::Hp2);
+        assert_eq!(JmMessage::parse("!tbond proof").unwrap().command, MessageCommand::TBond);
+
+        // Private commands
+        assert_eq!(JmMessage::parse("!auth data").unwrap().command, MessageCommand::Auth);
+        assert_eq!(JmMessage::parse("!pubkey abc").unwrap().command, MessageCommand::PubKey);
+        assert_eq!(JmMessage::parse("!tx data").unwrap().command, MessageCommand::Tx);
+        assert_eq!(JmMessage::parse("!sig data").unwrap().command, MessageCommand::Sig);
+        assert_eq!(JmMessage::parse("!push data").unwrap().command, MessageCommand::Push);
+        assert_eq!(JmMessage::parse("!error msg").unwrap().command, MessageCommand::Error);
+    }
+
+    #[test]
+    fn test_is_offer() {
+        assert!(!MessageCommand::Orderbook.is_offer());
+        assert!(!MessageCommand::Cancel.is_offer());
+        assert!(!MessageCommand::Fill.is_offer());
+        assert!(MessageCommand::Sw0AbsOffer.is_offer());
     }
 }

@@ -8,7 +8,7 @@ use joinmarket_core::handshake::{PeerHandshake, DnHandshake, CURRENT_PROTO_VER};
 use joinmarket_core::message::{
     OnionEnvelope, msg_type,
     parse_pubmsg_line, parse_privmsg_line,
-    JmMessage, MessageCommand,
+    JmMessage,
 };
 use joinmarket_core::onion::OnionServiceAddr;
 use joinmarket_tor::provider::{BoxReader, BoxWriter};
@@ -319,7 +319,7 @@ pub async fn handle_peer(
             probe = probe_rx.recv() => {
                 match probe {
                     Some(frame) => {
-                        // Write probe frame; a failure means the connection is dead.
+                        tracing::trace!(nick = %nick, raw = %frame.trim_end_matches(['\r', '\n']), "send direct");
                         if let Err(e) = writer.write_all(frame.as_bytes()).await {
                             tracing::debug!(nick = %nick, error = %e, "Write probe failed — peer gone");
                             break;
@@ -515,23 +515,10 @@ async fn dispatch_pubmsg(
     router: &Router,
     _writer: &mut BufWriter<BoxWriter>,
 ) -> anyhow::Result<()> {
-    match msg.command {
-        MessageCommand::Ann => {
-            if is_maker {
-                router.update_maker_ann(nick.as_ref(), body.to_string());
-            }
-            broadcast_pubmsg(&nick, body, router);
-        }
-        MessageCommand::Orderbook => {
-            broadcast_pubmsg(&nick, body, router);
-        }
-        MessageCommand::Disconnect => {
-            return Err(anyhow::anyhow!("Peer requested disconnect via pubmsg"));
-        }
-        _ => {
-            tracing::debug!(nick = %nick, cmd = ?msg.command, "Ignoring unhandled pubmsg command");
-        }
+    if is_maker && msg.command.is_offer() {
+        router.update_maker_ann(nick.as_ref(), body.to_string());
     }
+    broadcast_pubmsg(&nick, body, router);
     Ok(())
 }
 

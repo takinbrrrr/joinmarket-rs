@@ -215,9 +215,9 @@ async fn test_ann_broadcast_to_all_peers() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Maker sends !ann as pubmsg (type=687)
+    // Maker sends !sw0absoffer as pubmsg (type=687)
     // Line format: "<nick>!PUBLIC<body>"
-    let ann_line = format!("{}!PUBLIC!ann hello from maker", NICK_MAKER);
+    let ann_line = format!("{}!PUBLIC!sw0absoffer hello from maker", NICK_MAKER);
     let ann_env = OnionEnvelope::new(msg_type::PUBMSG, ann_line).serialize();
     maker_w.write_all(ann_env.as_bytes()).await.unwrap();
     maker_w.flush().await.unwrap();
@@ -225,7 +225,7 @@ async fn test_ann_broadcast_to_all_peers() {
     // Taker should receive the broadcast (also type=687)
     let broadcast = read_envelope(&mut taker_r).await.expect("expected broadcast message");
     assert_eq!(broadcast.msg_type, msg_type::PUBMSG);
-    assert!(broadcast.line.contains("!ann hello from maker"), "got: {}", broadcast.line);
+    assert!(broadcast.line.contains("!sw0absoffer hello from maker"), "got: {}", broadcast.line);
 
     shutdown.cancel();
 }
@@ -360,8 +360,8 @@ async fn test_broadcast_does_not_echo_to_sender() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Maker sends !ann
-    let ann_line = format!("{}!PUBLIC!ann test echo filter", NICK_MAKER_B);
+    // Maker sends !sw0absoffer
+    let ann_line = format!("{}!PUBLIC!sw0absoffer test echo filter", NICK_MAKER_B);
     let ann_env = OnionEnvelope::new(msg_type::PUBMSG, ann_line).serialize();
     maker_w.write_all(ann_env.as_bytes()).await.unwrap();
     maker_w.flush().await.unwrap();
@@ -369,7 +369,7 @@ async fn test_broadcast_does_not_echo_to_sender() {
     // Taker should receive the broadcast
     let taker_msg = read_envelope(&mut taker_r).await.expect("taker should receive broadcast");
     assert_eq!(taker_msg.msg_type, msg_type::PUBMSG);
-    assert!(taker_msg.line.contains("!ann test echo filter"));
+    assert!(taker_msg.line.contains("!sw0absoffer test echo filter"));
 
     // Maker should NOT receive the broadcast back (echo filtering).
     // Use a short timeout — if we get nothing, the filter is working.
@@ -523,7 +523,7 @@ async fn test_pubmsg_from_nick_mismatch_disconnects() {
     assert_eq!(router.taker_count(), 1);
 
     // Send a pubmsg claiming to be from a DIFFERENT nick
-    let spoofed_line = format!("{}!PUBLIC!ann spoofed message", NICK_VICTIM);
+    let spoofed_line = format!("{}!PUBLIC!sw0absoffer spoofed message", NICK_VICTIM);
     let env = OnionEnvelope::new(msg_type::PUBMSG, spoofed_line).serialize();
     writer.write_all(env.as_bytes()).await.unwrap();
     writer.flush().await.unwrap();

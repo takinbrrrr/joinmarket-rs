@@ -15,13 +15,13 @@ A Rust rewrite addresses both problems:
 - **Designed for scale** — 100k+ concurrent peer connections on a single server
 - **Easy to package** — one file, no runtime dependencies, works on any modern Linux
 
-Programs ship as pre-built static binaries for Linux (x86\_64 and aarch64) as well as source. Building from source requires only `rustup` — no system libraries, no C toolchain beyond what Rust itself needs.
+Programs ship as pre-built static binaries for Linux (x86\_64 and aarch64), macOS (Apple Silicon and Intel), and Windows (x86\_64) as well as source. Building from source requires only `rustup` — no system libraries, no C toolchain beyond what Rust itself needs.
 
 ## Programs in this suite
 
 | Program | Crate | Description | Status |
 |---------|-------|-------------|--------|
-| Directory node | [`joinmarket-dn`](#joinmarket-dn--directory-node) | Rendezvous server for maker/taker peer discovery | In progress |
+| Directory node | [`joinmarket-dn`](#joinmarket-dn--directory-node) | Rendezvous server for maker/taker peer discovery | Alpha |
 
 Additional tools (yield generator, coinjoin client, wallet) will follow in later phases as the core library matures.
 
@@ -190,7 +190,7 @@ joinmarket-dn --datadir /var/lib/joinmarket "My directory node"
 ### With PoW (Arti build only)
 
 ```bash
-joinmarket-dn --pow "My PoW-protected directory"
+joinmarket-dn --pow "My PoW-protected directory node"
 ```
 
 ### Log level
