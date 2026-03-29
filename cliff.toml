@@ -1,0 +1,59 @@
+# git-cliff configuration
+# https://git-cliff.org/docs/configuration
+
+[changelog]
+header = """
+# Changelog\n
+All notable changes to this project will be documented in this file.\n
+"""
+body = """
+{%- macro remote_url() -%}
+  https://github.com/takinbrrrr/joinmarket-rs
+{%- endmacro -%}
+
+{% if version -%}
+    ## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else -%}
+    ## [Unreleased]
+{% endif -%}
+
+{% for group, commits in commits | group_by(attribute="group") %}
+    ### {{ group | striptags | trim | upper_first }}
+    {% for commit in commits %}
+        - {{ commit.message | split(pat="\n") | first | trim }}\
+    {% endfor %}
+{% endfor %}\n
+"""
+trim = true
+
+[git]
+conventional_commits = false
+split_commits = false
+commit_parsers = [
+    { message = "^[Aa]dd ", group = "Added" },
+    { message = "^[Ss]upport ", group = "Added" },
+    { message = "^[Ii]mplement ", group = "Added" },
+    { message = "^[Ii]ntroduce ", group = "Added" },
+    { message = "^[Ee]nable ", group = "Added" },
+    { message = "^[Bb]undle ", group = "Added" },
+    { message = "^[Ff]ix ", group = "Fixed" },
+    { message = "^[Rr]esolve ", group = "Fixed" },
+    { message = "^[Rr]epair ", group = "Fixed" },
+    { message = "^[Rr]emove ", group = "Removed" },
+    { message = "^[Dd]elete ", group = "Removed" },
+    { message = "^[Dd]rop ", group = "Removed" },
+    { message = "^[Rr]efactor ", group = "Changed" },
+    { message = "^[Rr]ename ", group = "Changed" },
+    { message = "^[Rr]eplace ", group = "Changed" },
+    { message = "^[Mm]ove ", group = "Changed" },
+    { message = "^[Rr]ewrite ", group = "Changed" },
+    { message = "^[Mm]igrate ", group = "Changed" },
+    { message = "^[Rr]estructure ", group = "Changed" },
+    { message = "^[Aa]lign ", group = "Changed" },
+    { message = "^[Uu]pdate ", group = "Changed" },
+    { message = "^[Rr]evert ", group = "Reverted" },
+    { message = "^.*", group = "Other" },
+]
+filter_commits = false
+tag_pattern = "v[0-9].*"
+sort_commits = "oldest"
