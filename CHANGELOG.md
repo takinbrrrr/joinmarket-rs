@@ -2,11 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.1.0-alpha.1] - 2026-03-31
 
 ### Added
 
 - Add git-cliff for automated release notes
+- Add unreleased changelog entries for recent changes
 
 ### Changed
 
