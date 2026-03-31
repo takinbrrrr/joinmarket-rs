@@ -4,9 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Add git-cliff for automated release notes
+
 ### Changed
 
 - Align wire protocol commands with Python JoinMarket for compatibility
+
+### Other
+
+- Sync documentation with codebase and update .gitignore
 
 ### Removed
 
