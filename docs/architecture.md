@@ -70,7 +70,7 @@ pub struct Nick(String);  // newtype wrapper
 
 impl Nick {
     pub fn generate(network: Network) -> (Nick, SigningKey);
-    pub fn verify_signature(&self, msg: &[u8], sig: &NickSig) -> bool;
+    pub fn verify_signature(&self, msg: &[u8], channel_id: &str, sig: &NickSig) -> bool;
     pub fn from_str(s: &str) -> Result<Nick, NickError>;  // validates format
 }
 ```
@@ -249,12 +249,15 @@ let location = OnionServiceAddr::parse(&handshake.location_string)
 Messages are newline-terminated, whitespace-delimited strings prefixed with `!command`.
 
 ```rust
+/// Application-level `!`-prefixed commands carried inside PUBMSG / PRIVMSG payloads.
+/// Envelope-level types (GETPEERLIST, PEERLIST, PING, PONG, DISCONNECT) are integer
+/// discriminators in `msg_type`, NOT `!`-commands — they are handled separately.
 pub enum MessageCommand {
-    Ann, Orderbook,                        // public broadcast
-    Fill, AbsOrder, RelOrder, IoAuth,      // private coinjoin negotiation
-    TxSigs, PushTx, Disconnect,
-    Getpeers, Peers,                       // directory-specific
-    Ping, Pong,                            // heartbeat
+    // Public broadcast (offer announcements)
+    AbsOffer, RelOffer, SwAbsOffer, SwRelOffer, Sw0AbsOffer, Sw0RelOffer,
+    Orderbook, Cancel, Hp2, TBond,
+    // Private (coinjoin negotiation)
+    Fill, IoAuth, Auth, PubKey, Tx, Sig, Push, Error,
 }
 
 pub struct JmMessage {
@@ -265,36 +268,57 @@ pub struct JmMessage {
 
 impl JmMessage {
     pub fn parse(raw: &str) -> Result<Self, ParseError>;
-    pub fn serialize(&self) -> String;
 }
 ```
 
 ### `handshake.rs`
 
+Two separate types for the two directions of the handshake exchange:
+
 ```rust
-#[derive(Debug, Serialize, Deserialize)]
-pub struct HandshakeMessage {
+/// Inbound peer handshake (envelope type 793). The peer sends this first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerHandshake {
     #[serde(rename = "app-name")]
     pub app_name: String,          // must be "joinmarket"
     pub directory: bool,           // true for directory nodes
     #[serde(rename = "location-string")]
-    pub location_string: String,   // "xxxx.onion:5222"
+    pub location_string: String,   // "xxxx.onion:5222" for makers, "" for takers
     #[serde(rename = "proto-ver")]
     pub proto_ver: u8,             // currently 5
     pub features: HashMap<String, serde_json::Value>,
     pub nick: String,
     pub network: String,           // "mainnet" | "testnet" | "signet"
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub motd: Option<String>,      // only sent by directory nodes
 }
 
-// Validation rules:
+/// Outbound directory handshake response (envelope type 795).
+#[derive(Debug, Serialize)]
+pub struct DnHandshake {
+    #[serde(rename = "app-name")]
+    pub app_name: String,
+    pub directory: bool,
+    #[serde(rename = "location-string")]
+    pub location_string: String,
+    #[serde(rename = "proto-ver-min")]
+    pub proto_ver_min: u8,         // min/max range instead of single proto-ver
+    #[serde(rename = "proto-ver-max")]
+    pub proto_ver_max: u8,
+    pub features: HashMap<String, serde_json::Value>,
+    pub accepted: bool,
+    pub nick: String,
+    pub network: String,
+    pub motd: String,              // MOTD is only sent by the directory node
+}
+
+// Validation rules (applied to PeerHandshake):
 // - app_name == "joinmarket"
-// - proto_ver == our configured version (currently 5)
+// - proto_ver == CURRENT_PROTO_VER (currently 5)
 // - network matches our configured network
 // - nick is well-formed (correct length, correct prefix byte)
-// - location_string, if non-empty, must parse as a valid OnionServiceAddr (Tor v3 + valid port)
-//   → if location_string is non-empty and fails OnionServiceAddr::parse(), DISCONNECT immediately
+// - features map: max 32 entries, no nested objects/arrays
+// - location_string, if non-empty and not "NOT-SERVING-ONION", must parse as
+//   a valid OnionServiceAddr (Tor v3 + valid port)
+//   → if non-empty and fails OnionServiceAddr::parse(), DISCONNECT immediately
 ```
 
 ### `crypto.rs`
@@ -317,7 +341,7 @@ impl EncryptionKey {
 }
 ```
 
-Dependencies: `secp256k1` (with `global-context` feature), `x25519-dalek`, `xsalsa20poly1305`
+Dependencies: `secp256k1` (with `global-context` feature), `x25519-dalek`, `crypto_secretbox`
 
 ### `fidelity_bond.rs`
 
@@ -375,31 +399,34 @@ Thin integration layer over `arti-client` and `tor-hsservice`. Exposes a `TorPro
 ### `provider.rs`
 
 ```rust
+pub type BoxReader = Box<dyn AsyncRead + Send + Unpin>;
+pub type BoxWriter = Box<dyn AsyncWrite + Send + Unpin>;
+
+pub struct IncomingConnection {
+    pub reader: BoxReader,
+    pub writer: BoxWriter,
+    pub circuit_id: String,
+}
+
 #[async_trait]
 pub trait TorProvider: Send + Sync {
-    async fn listen(&self, port: u16) -> Result<Box<dyn IncomingStream>, TorError>;
-    async fn connect(&self, addr: &str) -> Result<Box<dyn AsyncReadWrite>, TorError>;
     fn onion_address(&self) -> &str;
+    async fn accept(&self) -> Result<IncomingConnection, TorError>;
 }
 ```
 
 ### `arti_backend.rs` (feature = `"arti"`)
 
-Bootstrap sequence:
+Bootstrap is an associated method on `ArtiTorProvider`. It bootstraps the Tor client, launches the
+onion service, and waits up to 60 seconds for the `.onion` address to become available.
+
+Onion service launch (PoW disabled unless `--pow` was passed on the command line):
 
 ```rust
-pub async fn bootstrap_tor(state_dir: &Path) -> Result<TorClient<PreferredRuntime>, ArtiError> {
-    let config = TorClientConfig::builder()
-        .storage()
-            .cache_dir(state_dir.join("arti-cache"))
-            .state_dir(state_dir.join("arti-state"))
-            .build()?
-        .build()?;
-    TorClient::create_bootstrapped(config).await
+impl ArtiTorProvider {
+    pub async fn bootstrap(state_dir: &Path, pow_enabled: bool) -> Result<Self, TorError> { ... }
 }
 ```
-
-Onion service launch (PoW disabled unless `--pow` was passed on the command line). Inside `ArtiTorProvider::bootstrap`:
 
 ```rust
 let mut builder = OnionServiceConfig::builder();
@@ -419,7 +446,7 @@ if pow_enabled {
 [features]
 default = ["tordaemon"]      # C Tor daemon backend on by default
 tordaemon = []               # CTorProvider; requires tor binary on host
-arti = ["arti-client/onion-service-service", "equix", "hashx"]  # ArtiTorProvider + PoW
+arti = [...]                 # ArtiTorProvider — see joinmarket-tor/Cargo.toml
 ```
 
 ### `ctor_backend.rs` (feature = `"tordaemon"`, default)
@@ -462,14 +489,15 @@ Arguments:
 
 Startup sequence:
 
-1. Parse config + CLI args
-1. Bootstrap Arti (log progress to console)
-1. Launch onion service → print `.onion` address to stdout
+1. Parse CLI args, resolve datadir, load config
+1. Initialize tracing
 1. Start Prometheus metrics server
+1. Bootstrap Tor (backend determined by compile-time feature flag)
+1. Build MOTD string
 1. Start heartbeat loop
 1. Enter accept loop
 
-### `peer.rs` — Per-Peer State Machine
+### `peer.rs` — Per-Peer Handler
 
 ```
 State: AwaitingHandshake → Active(Maker|Taker) → Disconnected
@@ -478,13 +506,15 @@ State: AwaitingHandshake → Active(Maker|Taker) → Disconnected
 ```rust
 pub enum PeerRole { Maker, Taker }
 
-pub struct PeerState {
-    pub nick: Nick,
-    pub onion_address: Option<OnionServiceAddr>, // None for takers without a hidden service
-    pub role: PeerRole,
-    pub connected_at: Instant,
-    pub last_seen: Instant,
-    pub awaiting_pong: bool,
+/// Shared, read-only context for all peer tasks. Created once in the accept
+/// loop and wrapped in `Arc` to avoid per-connection cloning.
+pub struct PeerContext {
+    pub router: Arc<Router>,
+    pub admission: Arc<AdmissionController>,
+    pub network: Arc<str>,
+    pub motd: Arc<str>,
+    pub directory_onion: Arc<str>,
+    pub directory_nick: Arc<str>,
 }
 ```
 
@@ -500,27 +530,38 @@ pub struct PeerState {
 
 ### `router.rs` — Separate Maker and Taker Registries
 
-**IMPORTANT:** The `Router` maintains two separate registries. `!getpeers` returns ONLY the makers registry — never takers. This is because:
+**IMPORTANT:** The `Router` maintains two separate registries. `GETPEERLIST` (envelope type 791) returns ONLY the makers registry — never takers. This is because:
 
 - The full maker list must be returned (takers need complete market visibility to apply fidelity bond weighting, fee filters, and amount range matching — criteria the directory node is not privy to)
-- Takers are transient; including them in `!getpeers` responses would be incorrect and leak privacy
+- Takers are transient; including them in `PEERLIST` responses would be incorrect and leak privacy
 
 ```rust
+/// Broadcast message carrying the sender's nick for echo filtering.
+/// Peers skip messages where `sender_nick` matches their own nick.
+/// System messages (e.g., disconnect notifications) use an empty `sender_nick`.
+pub struct BroadcastMsg {
+    pub sender_nick: Arc<str>,
+    pub payload: Arc<str>,
+}
+
 pub struct Router {
-    makers: ShardedRegistry,              // nick → MakerInfo
-    takers: ShardedRegistry,              // nick → TakerInfo (not exposed via !getpeers)
-    public_tx: broadcast::Sender<Arc<str>>, // one allocation per broadcast message
+    makers: ShardedRegistry<MakerInfo>,       // nick → MakerInfo
+    takers: ShardedRegistry<TakerInfo>,       // nick → TakerInfo (not exposed via GETPEERLIST)
+    broadcast_tx: broadcast::Sender<BroadcastMsg>,
+    peer_meta: DashMap<Arc<str>, PeerMeta>,   // per-peer metadata
+    dn_nick: Mutex<String>,                   // directory node's own nick
+    dn_location: Mutex<String>,               // directory node's onion location
 }
 
 pub struct MakerInfo {
-    pub nick: String,
+    pub nick: Arc<str>,
     pub onion_address: OnionServiceAddr,      // always valid — enforced at admission
-    pub fidelity_bond: Option<FidelityBondProof>,
-    pub last_ann: Option<String>,  // most recent !ann message text
+    pub fidelity_bond: Option<Arc<FidelityBondProof>>,
+    pub last_ann: Option<String>,             // most recent offer announcement text
 }
 
 pub struct TakerInfo {
-    pub nick: String,
+    pub nick: Arc<str>,
     pub onion_address: Option<OnionServiceAddr>, // validated if present, else None
 }
 
@@ -530,22 +571,24 @@ impl Router {
     pub fn deregister(&self, nick: &str);
 
     // Returns ALL makers — not sampled, not filtered.
-    // At >20k active makers, returns bond-weighted sample of 3000-5000 with metadata.
+    // At >20k active makers, returns random sample of ~4000 with metadata.
     pub fn get_peers_response(&self) -> PeersResponse;
 
-    // For private message routing: return target's onion address
+    // For private message routing: return target's onion location-string
+    // Searches makers first, then falls back to takers.
     pub fn locate_peer(&self, nick: &str) -> Option<String>;
 
     // Broadcast public message to all connected peers except sender
-    // Uses broadcast::Sender<Arc<str>> — one allocation regardless of peer count
     pub fn broadcast(&self, sender_nick: &str, msg: Arc<str>);
+    // Broadcast system messages (empty sender_nick, e.g., disconnect notifications)
+    pub fn broadcast_raw(&self, msg: Arc<str>);
 }
 
 pub struct PeersResponse {
     pub peers: Vec<MakerInfo>,
     pub total_makers: usize,
     pub returned: usize,
-    pub sampling: Option<&'static str>,  // "bond_weighted" if sampled, else None
+    pub sampling: Option<&'static str>,
     pub request_more: bool,
 }
 ```
@@ -554,9 +597,9 @@ pub struct PeersResponse {
 
 **Broadcast channel:** Use `tokio::sync::broadcast::channel` with capacity 1024. All connected peer tasks hold a `Receiver`. When a peer lags (falls behind by >1024 messages), it receives `RecvError::Lagged` and is disconnected.
 
-### `admission.rs` — Five-Layer Defence
+### `admission.rs` — Multi-Layer Defence
 
-All five layers are enforced in order. A connection that fails any layer is rejected before consuming further resources.
+All layers are enforced in order. A connection that fails any layer is rejected before consuming further resources.
 
 ```rust
 pub struct AdmissionController {
@@ -577,8 +620,8 @@ impl AdmissionController {
         bond: Option<&FidelityBondProof>,
     ) -> Result<(), AdmissionError>;
 
-    // Call on disconnect (cleanup all state)
-    pub fn release_peer(&self, nick: &str);
+    // Call on disconnect (cleanup all state — pass is_maker to decrement maker count)
+    pub fn release_peer(&self, nick: &str, is_maker: bool);
 }
 ```
 
@@ -604,9 +647,9 @@ struct SybilMaps {
 }
 
 impl SybilGuard {
-    pub fn register(&self, nick: &str, onion: &str) -> Result<(), SybilError>;
+    pub fn register(&self, nick: &str, onion: &OnionAddress) -> Result<(), SybilError>;
     pub fn deregister(&self, nick: &str);
-    fn is_nick_active(&self, nick: &str) -> bool;
+    pub fn is_nick_active(&self, nick: &str) -> bool;
 }
 ```
 
@@ -638,44 +681,48 @@ Atomically reserves a slot via `fetch_add`; rolls back all prior layers on failu
 
 ### `heartbeat.rs`
 
-Every 60 seconds, send `!ping` to all active peers. Peers that do not respond with `!pong` within 10 seconds are deregistered and their connections closed. This clears zombie connections that TCP keepalive alone cannot detect (Tor circuits can be silently dropped).
+Three-step liveness sweep every 5 minutes. Clears zombie connections that TCP keepalive alone cannot detect (Tor circuits can be silently dropped).
+
+**Timing constants:**
+- Idle check interval: **300 seconds** (5 min)
+- Write probe threshold: **300 seconds** (5 min idle)
+- Hard evict threshold: **900 seconds** (15 min idle)
+- Pong timeout: **30 seconds**
+
+**Algorithm (each sweep):**
+1. **Hard-evict** peers idle >15 min (no probe — they are assumed dead)
+2. **Send PING** (envelope type 797) to ping-capable peers idle >5 min. Python JoinMarket clients do not support ping, so they are never probed (they rely on natural message activity to avoid hard eviction).
+3. **Wait 30 seconds**, then evict peers that did not respond with PONG (type 799)
 
 ```rust
 pub async fn heartbeat_loop(router: Arc<Router>, shutdown: CancellationToken) {
-    let mut interval = tokio::time::interval(Duration::from_secs(60));
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {
-                let timed_out = router.ping_all_and_collect_timeouts(
-                    Duration::from_secs(10)
-                ).await;
-                for nick in timed_out {
-                    router.deregister(&nick);
-                }
-            }
-            _ = shutdown.cancelled() => break,
-        }
-    }
+    // Delayed start — waits one interval before first sweep
+    // Uses tokio::select! with shutdown.cancelled() at each step
+    // ...
 }
 ```
 
 ### `metrics.rs`
 
-Prometheus metrics via `metrics` + `metrics-exporter-prometheus` crates. Expose on `--metrics-bind` (default `127.0.0.1:9090`).
+Prometheus metrics via `metrics` + `metrics-exporter-prometheus` crates. Expose on `--metrics-bind` (default `127.0.0.1:9090`). Metrics are registered at usage sites via `metrics::counter!()`, `metrics::gauge!()`, etc.
 
 ```
 # Peer counts
-jm_peers_active{role="maker"}           gauge
-jm_peers_active{role="taker"}           gauge
-jm_peers_total_registered{role}         counter
+jm_peers_active{role="maker|taker"}         gauge
+jm_peers_total_registered{role="maker|taker"} counter
 
 # Handshake outcomes
-jm_handshakes_total{result="ok|timeout|proto_mismatch|network_mismatch"}  counter
+jm_handshakes_total{result="ok|eof|error|timeout|parse_error|proto_mismatch|network_mismatch"}  counter
 
 # Message routing
-jm_messages_broadcast_total             counter
-jm_broadcast_lag_evictions_total        counter  # peers dropped for lagging
-jm_router_locate_duration_seconds       histogram
+jm_messages_broadcast_total                 counter
+jm_broadcast_lag_evictions_total            counter  # peers dropped for lagging
+jm_router_locate_duration_seconds           histogram
+jm_router_locate_hits_total                 counter
+jm_router_locate_misses_total              counter
+
+# Rate limiting
+jm_pubmsg_rate_limit_disconnects_total     counter
 
 # Admission defence layer hits
 jm_admission_invalid_onion_total           counter  # bad location-string → disconnect
@@ -683,38 +730,37 @@ jm_admission_sybil_rejections_total        counter  # Layer 2
 jm_admission_bond_dup_rejections_total     counter  # Layer 3
 jm_admission_maker_cap_rejections_total    counter  # Layer 4
 
-# Tor
-# jm_pow_effort_current: not implemented — tor-hsservice 0.40 exposes no API
-#   to query the current PoW effort level at runtime.
+# Heartbeat
+jm_heartbeat_evictions_total               counter
 ```
 
 ---
 
 ## Key Routing Behaviours
 
-### Public message (`!ann`, `!orderbook`)
+### Public message (offers like `!sw0absoffer`, `!orderbook`, etc.)
 
-1. Receive message from peer
-1. Validate nick signature
-1. If sender is a Maker, update `last_ann` in `MakerInfo`
+1. Receive PUBMSG (envelope type 687) from peer
+1. Validate `from_nick` matches the peer's authenticated nick (disconnect on mismatch)
+1. Enforce per-peer rate limit (30 pubmsg per 60-second window)
+1. If sender is a Maker and the message is an offer command, update `last_ann` in `MakerInfo`
 1. `router.broadcast(sender_nick, msg)` — fans out via broadcast channel to all peers
 
 ### Private message routing (`!fill`, `!ioauth`, etc.)
 
-1. Receive `!fill <target_nick> <amount> ...` from a Taker
-1. Look up `target_nick` in Router → get their onion address
-1. Respond to sender with the target's onion address
-1. **Do not relay the message content** — sender connects directly to target
+1. Receive PRIVMSG (envelope type 685) from a peer
+1. Validate `from_nick` matches the peer's authenticated nick (disconnect on mismatch)
+1. Look up `target_nick` in Router via `locate_peer()` → get their onion address
+1. Forward the PRIVMSG envelope to the target peer
+1. Send a PEERLIST (type 789) to the target containing the sender's onion address, enabling direct peer-to-peer connection
 
-### `!getpeers` request
+### `GETPEERLIST` request (envelope type 791)
 
-1. Receive `!getpeers` from any peer
+1. Receive GETPEERLIST from any peer
 1. Call `router.get_peers_response()`
 1. If `≤20,000` makers: return full list
-1. If `>20,000` makers: return bond-weighted sample of 3,000–5,000 with metadata (`total_makers`, `returned`, `sampling: "bond_weighted"`, `request_more: true`)
-1. Respond with `!peers <json_blob>`
-
-Bond weight formula (for sampling at scale): `bond_value = (locked_coins × (exp(r × locktime) − 1))²`
+1. If `>20,000` makers: return random sample of ~4,000 with metadata
+1. Respond with PEERLIST (envelope type 789) containing comma-separated `nick;location` pairs
 
 ---
 
@@ -726,7 +772,7 @@ Bond weight formula (for sampling at scale): `bond_value = (locked_coins × (exp
 [dependencies]
 secp256k1 = { version = "0.28", features = ["global-context", "rand-std", "recovery"] }
 x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
-xsalsa20poly1305 = "0.9"
+crypto_secretbox = "0.1"     # XSalsa20Poly1305 for NaCl box encryption
 bitcoin_hashes = "0.13"
 bs58 = "0.5"
 data-encoding = "2"          # BASE32_NOPAD for onion address decoding
@@ -773,15 +819,21 @@ optional = true
 version = "0.8"
 optional = true
 
+[dependencies.libsqlite3-sys]
+version = "0.36"
+features = ["bundled"]
+optional = true
+
 [features]
 default = ["tordaemon"]
 tordaemon = []   # C Tor daemon backend (CTorProvider); requires tor binary on host
-arti = [         # Arti embedded Tor backend; pulls in LGPL equix/hashx for PoW
+arti = [         # Arti embedded Tor backend
     "dep:arti-client",
     "dep:tor-hsservice",
     "dep:tor-rtcompat",
     "dep:tor-cell",
     "dep:safelog",
+    "dep:libsqlite3-sys",
 ]
 ```
 
@@ -822,6 +874,6 @@ metrics-exporter-prometheus = { version = "0.13", default-features = false, feat
 
 Use 4 KB `BufReader`/`BufWriter` (not the default 8 KB). JoinMarket messages are always under 2 KB.
 
-Use `Arc<str>` not `String` for nicks and onion addresses stored in the registry (immutable shared strings, one allocation per unique value).
+Use `Arc<str>` not `String` for nicks and broadcast payloads stored in the registry (immutable shared strings, one allocation per unique value).
 
 Use `ShardedRegistry<T>` (64 `parking_lot::Mutex<HashMap<Arc<str>, T>>` shards) for maker/taker registries, and `DashMap<Arc<str>, PeerMeta>` for peer metadata.

@@ -4,12 +4,12 @@
 
 The hidden service Ed25519 identity key determines the `.onion` address. It must be kept on persistent storage and backed up. **If it is lost the .onion address is permanently gone.**
 
-**tordaemon backend:** C Tor manages the key inside `--hidden-service-dir`. Do not delete the files in that directory.
+**tordaemon backend:** C Tor manages the key inside the `hidden_service_dir` configured in `joinmarket.cfg` (the `[MESSAGING:onion]` section). Do not delete the files in that directory.
 
-**Arti backend:** Arti manages the key inside `--state-dir` in its own keystore format, alongside Tor consensus and circuit state:
+**Arti backend:** Arti manages the key inside `<datadir>/` in its own keystore format, alongside Tor consensus and circuit state:
 
 ```
-<state-dir>/
+<datadir>/
 ├── arti-cache/     # Tor consensus cache (Arti managed)
 ├── arti-state/     # Tor circuit state (Arti managed)
 └── keys/           # Ed25519 hidden service key (Arti keystore — DO NOT DELETE)
@@ -25,7 +25,7 @@ Wants=network-online.target
 
 [Service]
 ExecStart=/usr/local/bin/joinmarket-dn \
-    --hidden-service-dir=/var/lib/joinmarket/hs-keys \
+    --datadir=/var/lib/joinmarket \
     --metrics-bind=127.0.0.1:9090 \
     "Greetings from a Rust directory node"
 User=joinmarket

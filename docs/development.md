@@ -9,7 +9,7 @@
 - [ ] `OnionServiceAddr::parse()` — location-string split + port validation
 - [ ] Unit tests: known-good v3 addresses, v2 addresses (must reject), wrong checksum, wrong length, wrong version byte, port out of range
 - [ ] `JmMessage` parse/serialize for all command types
-- [ ] `HandshakeMessage` serde roundtrip + validation logic
+- [ ] `PeerHandshake` / `DnHandshake` serde roundtrip + validation logic
 - [ ] secp256k1 signing + verification
 - [ ] `FidelityBondProof` 252-byte parser
 - [ ] `joinmarket.cfg` INI parser
@@ -18,7 +18,7 @@
 
 ### Phase 2 — `joinmarket-tor` (Weeks 4–5)
 
-- [ ] `bootstrap_tor()` with persistent state dir
+- [ ] `ArtiTorProvider::bootstrap()` with persistent state dir
 - [ ] `launch_onion_service()` with stable key persistence
 - [ ] PoW defence configuration (feature-flagged)
 - [ ] `TorProvider` trait + `ArtiTorProvider` implementation
@@ -34,7 +34,7 @@
 - [ ] `sybil_guard.rs`
 - [ ] `bond_registry.rs`
 - [ ] MOTD sent in handshake
-- [ ] `!getpeers` / `!peers` response (full list ≤20k, sampled >20k)
+- [ ] `GETPEERLIST` / `PEERLIST` response (full list ≤20k, sampled >20k)
 - [ ] Graceful shutdown via `CancellationToken`
 - [ ] **Milestone:** Rust DN completes handshake with real Python JoinMarket client
 
@@ -72,15 +72,17 @@
 
 1. Start Rust DN in-process (with mock Tor provider)
 1. Connect two mock peers (one Maker, one Taker)
-1. Assert Maker receives broadcast of Taker's `!ann` (and vice versa)
-1. Assert `!getpeers` returns only the Maker
-1. Assert `!fill` routing returns Maker's onion address to Taker
-1. Assert `!ping` / `!pong` heartbeat clears disconnected peers
+1. Assert Maker receives broadcast of Taker's offer (e.g. `!sw0absoffer`) and vice versa
+1. Assert `GETPEERLIST` (envelope type 791) returns only the Maker
+1. Assert PRIVMSG routing forwards to the target peer
+1. Assert PING / PONG (envelope types 797/799) heartbeat clears disconnected peers
 
-### Fuzz tests
+### Fuzz tests (planned)
+
+Fuzz targets are not yet implemented. When added, they will live in a `fuzz/` directory:
 
 ```
 fuzz/
 ├── fuzz_parse_message.rs     — arbitrary bytes into JmMessage::parse
-└── fuzz_parse_handshake.rs   — arbitrary bytes into serde_json::from_str::<HandshakeMessage>
+└── fuzz_parse_handshake.rs   — arbitrary bytes into serde_json::from_str::<PeerHandshake>
 ```
